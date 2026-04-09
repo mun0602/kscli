@@ -195,6 +195,9 @@ def build_parser() -> argparse.ArgumentParser:
     fivesim_sub.add_parser("balance", aliases=["sodu", "info"], help="Xem số dư 5SIM")
     fivesim_sub.add_parser("prices", help="Xem giá SĐT kwai theo quốc gia")
 
+    token_parser = fivesim_sub.add_parser("set-token", aliases=["token", "key"], help="Nhập và lưu 5SIM API token")
+    token_parser.add_argument("token_value", nargs="?", default=None, help="API token (hoặc nhập interactive)")
+
     buy_parser = fivesim_sub.add_parser("buy", aliases=["mua"], help="Mua số điện thoại")
     buy_parser.add_argument("--country", default=None, help="Quốc gia (mặc định: từ config)")
     buy_parser.add_argument("--operator", default=None, help="Nhà mạng")
@@ -560,15 +563,74 @@ def run_cli(argv: list[str] | None = None) -> int:
 
         if args.command == "5sim":
             from kscli.core.sms_5sim import FiveSimAPI
-            from kscli.config import get_config
+            from kscli.config import get_config, CONFIG_DIR, CONFIG_FILE
 
             cfg = get_config()
+            action = getattr(args, "fivesim_action", None)
+
+            # ── set-token: lưu token vào config.toml ──
+            if action in ("set-token", "token", "key"):
+                token_val = getattr(args, "token_value", None)
+                if not token_val:
+                    # Interactive mode
+                    try:
+                        token_val = input("🔑 Nhập 5SIM API token: ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        return _emit({"ok": False, "message": "❌ Đã hủy."}, args.json)
+                if not token_val:
+                    return _emit({"ok": False, "message": "❌ Token không được để trống."}, args.json)
+
+                # Verify token trước khi lưu
+                try:
+                    test_api = FiveSimAPI(token_val)
+                    profile = test_api.get_profile()
+                    balance = profile.get("balance", 0)
+                except Exception as e:
+                    return _emit({"ok": False, "message": f"❌ Token không hợp lệ: {e}"}, args.json)
+
+                # Lưu vào config.toml
+                CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+                if CONFIG_FILE.exists():
+                    content = CONFIG_FILE.read_text()
+                else:
+                    from kscli.config import DEFAULT_CONFIG
+                    content = DEFAULT_CONFIG
+
+                # Replace api_key line
+                import re
+                if re.search(r'^api_key\s*=', content, re.MULTILINE):
+                    content = re.sub(
+                        r'^(api_key\s*=\s*).*$',
+                        f'api_key = "{token_val}"',
+                        content,
+                        count=1,
+                        flags=re.MULTILINE,
+                    )
+                else:
+                    # Thêm vào section [fivesim]
+                    content = content.replace(
+                        '[fivesim]',
+                        f'[fivesim]\napi_key = "{token_val}"',
+                    )
+
+                CONFIG_FILE.write_text(content)
+
+                # Reset config cache
+                if hasattr(get_config, '_instance'):
+                    del get_config._instance
+
+                return _emit({
+                    "ok": True,
+                    "balance": balance,
+                    "config_file": str(CONFIG_FILE),
+                    "message": f"✅ Token đã lưu vào {CONFIG_FILE}\n💰 Số dư: {balance} RUB",
+                }, args.json)
+
             token = cfg.fivesim.api_key or os.getenv("FIVE_SIM_TOKEN", "") or os.getenv("KUAISHOU_5SIM_API_KEY", "")
             if not token:
-                return _emit({"ok": False, "message": "❌ Chưa cấu hình 5SIM API key. Set FIVE_SIM_TOKEN trong .env hoặc config.toml"}, args.json)
+                return _emit({"ok": False, "message": "❌ Chưa có token. Chạy: dk 5sim set-token <YOUR_TOKEN>"}, args.json)
 
             api = FiveSimAPI(token)
-            action = getattr(args, "fivesim_action", None)
 
             if not action or action in ("balance", "sodu", "info"):
                 try:
