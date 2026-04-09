@@ -188,6 +188,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("apk-url", aliases=["linkapp", "apkurl"], help="Hiện URL tải APK mặc định", parents=[output_parser])
 
+    # ── 5SIM commands ──
+    fivesim_parser = subparsers.add_parser("5sim", aliases=["sms", "5s"], help="Quản lý 5SIM: check số dư, mua số, check order", parents=[output_parser])
+    fivesim_sub = fivesim_parser.add_subparsers(dest="fivesim_action")
+
+    fivesim_sub.add_parser("balance", aliases=["sodu", "info"], help="Xem số dư 5SIM")
+    fivesim_sub.add_parser("prices", help="Xem giá SĐT kwai theo quốc gia")
+
+    buy_parser = fivesim_sub.add_parser("buy", aliases=["mua"], help="Mua số điện thoại")
+    buy_parser.add_argument("--country", default=None, help="Quốc gia (mặc định: từ config)")
+    buy_parser.add_argument("--operator", default=None, help="Nhà mạng")
+    buy_parser.add_argument("--product", default=None, help="Sản phẩm (mặc định: kwai)")
+
+    check_order_parser = fivesim_sub.add_parser("check", aliases=["xem"], help="Check trạng thái order")
+    check_order_parser.add_argument("--order", type=int, required=True, help="Order ID")
+
+    cancel_parser = fivesim_sub.add_parser("cancel", aliases=["huy"], help="Hủy order")
+    cancel_parser.add_argument("--order", type=int, required=True, help="Order ID")
+
+    finish_parser = fivesim_sub.add_parser("finish", aliases=["xong"], help="Hoàn tất order")
+    finish_parser.add_argument("--order", type=int, required=True, help="Order ID")
+
     login_parser = subparsers.add_parser("dangnhap", aliases=["login", "signin"], help="Auto-login vào Kuaishou dùng 5SIM", parents=[output_parser])
     login_parser.add_argument("--vm", type=int, required=True, help="VM cần login")
     login_parser.add_argument("--phone", default=None, help="SĐT cụ thể (nếu không dùng 5SIM)")
@@ -231,10 +252,17 @@ def run_cli(argv: list[str] | None = None) -> int:
         "taiapk": "download-apk", "downloadapk": "download-apk",
         "linkapp": "apk-url", "apkurl": "apk-url",
         "login": "dangnhap", "signin": "dangnhap",
-        "addfriend": "ketban", "add-friends": "ketban"
+        "addfriend": "ketban", "add-friends": "ketban",
+        "sms": "5sim", "5s": "5sim",
     }
     if args.command in aliases_map:
         args.command = aliases_map[args.command]
+
+    # Workaround: --json flag bị mất với sub-subparser (5sim)
+    if not getattr(args, "json", False):
+        raw_argv = argv if argv is not None else sys.argv[1:]
+        if "--json" in raw_argv:
+            args.json = True
         
     db = Database()
 
@@ -529,6 +557,111 @@ def run_cli(argv: list[str] | None = None) -> int:
                 "cache_dir": mumu.APK_CACHE_DIR,
                 "message": f"URL mặc định: {mumu.DEFAULT_APK_URL}\nCache: {mumu.APK_CACHE_DIR}",
             }, args.json)
+
+        if args.command == "5sim":
+            from kscli.core.sms_5sim import FiveSimAPI
+            from kscli.config import get_config
+
+            cfg = get_config()
+            token = cfg.fivesim.api_key or os.getenv("FIVE_SIM_TOKEN", "") or os.getenv("KUAISHOU_5SIM_API_KEY", "")
+            if not token:
+                return _emit({"ok": False, "message": "❌ Chưa cấu hình 5SIM API key. Set FIVE_SIM_TOKEN trong .env hoặc config.toml"}, args.json)
+
+            api = FiveSimAPI(token)
+            action = getattr(args, "fivesim_action", None)
+
+            if not action or action in ("balance", "sodu", "info"):
+                try:
+                    profile = api.get_profile()
+                    balance = profile.get("balance", 0)
+                    rating = profile.get("rating", 0)
+                    return _emit({
+                        "ok": True,
+                        "balance": balance,
+                        "rating": rating,
+                        "email": profile.get("email", ""),
+                        "message": f"💰 Số dư: {balance} RUB | ⭐ Rating: {rating}",
+                    }, args.json)
+                except Exception as e:
+                    return _emit({"ok": False, "message": f"❌ Lỗi 5SIM: {e}"}, args.json)
+
+            if action == "prices":
+                import requests
+                try:
+                    product = cfg.fivesim.product or "kwai"
+                    resp = requests.get(
+                        f"https://5sim.net/v1/guest/prices?product={product}",
+                        headers={"Accept": "application/json"},
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    # Structure: {product: {country: {operator: {cost, count, ...}}}}
+                    summary = {}
+                    product_data = data.get(product, {})
+                    for country, operators in product_data.items():
+                        if isinstance(operators, dict):
+                            for op, info in operators.items():
+                                if isinstance(info, dict) and info.get("count", 0) > 0:
+                                    summary[f"{country}/{op}"] = {
+                                        "cost": info["cost"],
+                                        "count": info.get("count", 0),
+                                        "rate": info.get("rate", 0),
+                                    }
+                    # Sort by cost, top 20 rẻ nhất có hàng
+                    sorted_prices = dict(sorted(summary.items(), key=lambda x: x[1]["cost"])[:20])
+                    return _emit({"ok": True, "product": product, "data": sorted_prices}, args.json)
+                except Exception as e:
+                    return _emit({"ok": False, "message": f"❌ Lỗi lấy giá: {e}"}, args.json)
+
+            if action in ("buy", "mua"):
+                country = getattr(args, "country", None) or cfg.fivesim.country or "england"
+                operator = getattr(args, "operator", None) or cfg.fivesim.operator or "any"
+                product = getattr(args, "product", None) or cfg.fivesim.product or "kwai"
+                try:
+                    order = api.buy_number(country=country, operator=operator, product=product)
+                    return _emit({
+                        "ok": True,
+                        "order_id": order.get("id"),
+                        "phone": order.get("phone"),
+                        "country": country,
+                        "operator": order.get("operator"),
+                        "message": f"✅ Mua thành công! SĐT: {order.get('phone')} | Order: {order.get('id')}",
+                    }, args.json)
+                except Exception as e:
+                    return _emit({"ok": False, "message": f"❌ Mua số thất bại: {e}"}, args.json)
+
+            if action in ("check", "xem"):
+                try:
+                    data = api.check_order(args.order)
+                    sms_list = data.get("sms", [])
+                    code = sms_list[0].get("code") if sms_list else None
+                    return _emit({
+                        "ok": True,
+                        "order_id": args.order,
+                        "status": data.get("status"),
+                        "phone": data.get("phone"),
+                        "sms_code": code,
+                        "sms_count": len(sms_list),
+                        "message": f"📱 Order #{args.order}: {data.get('status')} | SĐT: {data.get('phone')} | Code: {code or 'chưa có'}",
+                    }, args.json)
+                except Exception as e:
+                    return _emit({"ok": False, "message": f"❌ Check order lỗi: {e}"}, args.json)
+
+            if action in ("cancel", "huy"):
+                try:
+                    api.cancel_order(args.order)
+                    return _emit({"ok": True, "message": f"✅ Đã hủy order #{args.order}"}, args.json)
+                except Exception as e:
+                    return _emit({"ok": False, "message": f"❌ Hủy order lỗi: {e}"}, args.json)
+
+            if action in ("finish", "xong"):
+                try:
+                    api.finish_order(args.order)
+                    return _emit({"ok": True, "message": f"✅ Đã hoàn tất order #{args.order}"}, args.json)
+                except Exception as e:
+                    return _emit({"ok": False, "message": f"❌ Finish order lỗi: {e}"}, args.json)
+
+            return _emit({"ok": False, "message": "Dùng: dk 5sim balance|buy|check|cancel|finish"}, args.json)
 
         return _emit({"ok": False, "message": f"Unsupported command: {args.command}"}, args.json)
     except Exception as exc:
