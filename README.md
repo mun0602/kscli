@@ -5,7 +5,28 @@ CLI automation cho Kuaishou trên MuMu Player Pro (macOS).
 ## Cài đặt
 
 ```bash
-pip install git+https://github.com/mun0602/kscli.git
+# macOS / Linux
+pip3 install git+https://github.com/mun0602/kscli.git
+
+# Nếu "pip3 not found" → cài Python trước:
+# brew install python3
+```
+
+> ⚠️ Sau khi cài xong, nếu lệnh `dk` không chạy được, thêm PATH:
+> ```bash
+> echo 'export PATH="$HOME/Library/Python/3.9/bin:$HOME/.local/bin:$PATH"' >> ~/.zshrc
+> source ~/.zshrc
+> ```
+
+## Thiết lập 5SIM (lần đầu)
+
+```bash
+# Lấy token tại https://5sim.net/ → Profile → API Key
+dk 5sim set-token <YOUR_TOKEN>
+
+# Kiểm tra
+dk 5sim           # Xem số dư
+dk 5sim prices    # Xem giá SĐT
 ```
 
 ## Sử dụng
@@ -29,9 +50,16 @@ dk check-app --vm 0        # Kiểm tra đã cài chưa
 # Login
 dk dangnhap --vm 0         # Auto login qua 5SIM
 
+# 5SIM SMS
+dk 5sim                    # Số dư
+dk 5sim prices             # Bảng giá
+dk 5sim buy                # Mua số mới
+dk 5sim check --order 123  # Check SMS
+dk 5sim cancel --order 123 # Hủy order
+
 # Thêm --json để lấy output JSON
-dk list --json
-dk stats --json
+dk --json list
+dk --json 5sim balance
 ```
 
 ## Yêu cầu
