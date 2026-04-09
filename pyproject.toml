@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kscli"
+version = "1.0.0"
+description = "Kuaishou CLI automation engine"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+  {name = "mun0602"},
+]
+dependencies = [
+  "uiautomator2>=3.5.0",
+  "adbutils>=2.12.0",
+  "requests",
+  "python-dotenv",
+  "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.scripts]
+dk = "kscli.cli:run_cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["kscli*"]
