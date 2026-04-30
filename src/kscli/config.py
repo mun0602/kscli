@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -62,11 +63,12 @@ class AppConfig:
     def load(cls) -> AppConfig:
         """Load configuration from file, or create default if missing."""
         if not CONFIG_FILE.exists():
-            log.info(f"⚙️ Config file không tồn tại, tạo mới: {CONFIG_FILE}")
+            log.info(f"Config file không tồn tại, tạo mới: {CONFIG_FILE}")
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             CONFIG_FILE.write_text(DEFAULT_CONFIG)
-            log.info(f"  ✅ Tạo file config tại {CONFIG_FILE}")
-            log.info(f"  ⚠️ Vui lòng thêm 5SIM API key vào [fivesim] api_key")
+            CONFIG_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 600
+            log.info(f"  Tạo file config tại {CONFIG_FILE}")
+            log.info(f"  Vui lòng thêm 5SIM API key vào [fivesim] api_key")
 
         try:
             text = CONFIG_FILE.read_text()
@@ -100,7 +102,8 @@ class AppConfig:
         if not CONFIG_FILE.exists():
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             CONFIG_FILE.write_text(DEFAULT_CONFIG)
-            log.info(f"✅ Config file tạo tại {CONFIG_FILE}")
+            CONFIG_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 600
+            log.info(f"Config file tạo tại {CONFIG_FILE}")
 
 
 def get_config() -> AppConfig:
@@ -108,15 +111,3 @@ def get_config() -> AppConfig:
     if not hasattr(get_config, "_instance"):
         get_config._instance = AppConfig.load()
     return get_config._instance
-
-
-# Try Python 3.11+ tomllib first, then tomli as fallback
-try:
-    import tomllib
-except ImportError:
-    try:
-        import tomli as tomllib
-    except ImportError:
-        # Fallback: add tomli to requirements if not present
-        log.warning("⚠️ tomli not installed, install with: pip install tomli")
-        tomllib = None

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import time
 from typing import Optional
 
@@ -219,9 +220,7 @@ def adb_connect(port: int) -> bool:
 
 
 def set_language(index: int, lang: str = "zh-CN") -> tuple[bool, str]:
-    """
-    Ép ngôn ngữ cho Android VM qua ADB.
-    """
+    """Ép ngôn ngữ cho Android VM qua ADB."""
     port = get_port(index)
     if not port:
         return False, f"Không tìm thấy port cho VM #{index}."
@@ -229,30 +228,26 @@ def set_language(index: int, lang: str = "zh-CN") -> tuple[bool, str]:
     serial = f"127.0.0.1:{port}"
     adb_connect(port)
 
-    l_parts = lang.split('-')
+    l_parts = lang.split("-")
     lang_code = l_parts[0]
     country_code = l_parts[1] if len(l_parts) > 1 else ""
 
-    # Lệnh hệ thống Android
-    cmds = [
-        f"settings put global system_locales {lang}",
-        f"setprop persist.sys.locale {lang}",
-        f"setprop persist.sys.language {lang_code}",
-        f"setprop persist.sys.country {country_code}"
+    # Each entry is a list of shell words (safe — no shell=True)
+    cmds: list[list[str]] = [
+        [ADB, "-s", serial, "shell", "settings", "put", "global", "system_locales", lang],
+        [ADB, "-s", serial, "shell", "setprop", "persist.sys.locale", lang],
+        [ADB, "-s", serial, "shell", "setprop", "persist.sys.language", lang_code],
+        [ADB, "-s", serial, "shell", "setprop", "persist.sys.country", country_code],
     ]
 
     try:
-        import subprocess
-        import time
-        # Root the adb connection to set persist properties
-        subprocess.run([ADB, "-s", serial, "root"], capture_output=True)
+        subprocess.run([ADB, "-s", serial, "root"], capture_output=True, timeout=10)
         time.sleep(2)
         adb_connect(port)
-        
+
         for cmd in cmds:
-            subprocess.run(f"{ADB} -s {serial} shell \"{cmd}\" ", shell=True, capture_output=True)
-        
-        # Stop and start the VM to apply the locale change
+            subprocess.run(cmd, capture_output=True, timeout=10)
+
         log.info(f"Restarting VM #{index} to apply locale {lang}...")
         stop_vm(index)
         time.sleep(3)
@@ -260,7 +255,7 @@ def set_language(index: int, lang: str = "zh-CN") -> tuple[bool, str]:
 
         return True, f"Đã áp dụng ngôn ngữ {lang}. Đang khởi động lại VM #{index}..."
     except Exception as e:
-        return False, f"Lỗi khi đổi ngôn ngữ: {str(e)}"
+        return False, f"Lỗi khi đổi ngôn ngữ: {e}"
 
 
 def check_atx(index: int) -> dict:
@@ -293,7 +288,6 @@ def install_atx(index: int) -> tuple[bool, str]:
         time.sleep(1)
 
         # Step 2: Push u2.jar lên device qua CLI
-        import subprocess, sys
         result = subprocess.run(
             [sys.executable, "-m", "uiautomator2", "init", "--serial", serial],
             capture_output=True, text=True, timeout=60
@@ -417,7 +411,6 @@ def download_apk(url: str | None = None, force: bool = False) -> tuple[bool, str
     Caches downloaded APK to avoid re-downloading.
     """
     import urllib.request
-    import hashlib
 
     url = url or DEFAULT_APK_URL
     os.makedirs(APK_CACHE_DIR, exist_ok=True)

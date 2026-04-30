@@ -15,87 +15,22 @@ Dùng: dk dangnhap --vm 0
 from __future__ import annotations
 
 import logging
-import re
 import time
 
-import requests
 import uiautomator2 as u2
 
 from kscli.core.mumu_adapter import adb_connect, ensure_mumu_running, get_port
+from kscli.core.sms_5sim import FiveSimAPI
 
 log = logging.getLogger(__name__)
 
-FIVE_SIM_TOKEN = ""  # Set via env or config
-FIVE_SIM_BASE  = "https://5sim.net/v1"
-KS_PACKAGE     = "com.smile.gifmaker"
+KS_PACKAGE = "com.smile.gifmaker"
 
-# Số tốt nhất — england virtual59 (rate ~52%)
-DEFAULT_COUNTRY  = "england"
+DEFAULT_COUNTRY = "england"
 DEFAULT_OPERATOR = "virtual59"
-DEFAULT_PRODUCT  = "kwai"
+DEFAULT_PRODUCT = "kwai"
 
-
-# ── 5sim helpers ────────────────────────────────────────────
-
-class FiveSimClient:
-    def __init__(self, token: str):
-        self.headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-        }
-
-    def _get(self, path: str) -> dict:
-        resp = requests.get(f"{FIVE_SIM_BASE}{path}", headers=self.headers, timeout=15)
-        resp.raise_for_status()
-        return resp.json()
-
-    def balance(self) -> float:
-        return self._get("/user/profile").get("balance", 0)
-
-    def buy_number(
-        self,
-        country: str = DEFAULT_COUNTRY,
-        operator: str = DEFAULT_OPERATOR,
-        product: str = DEFAULT_PRODUCT,
-    ) -> dict:
-        """Mua số mới. Trả về order dict có {id, phone}."""
-        data = self._get(f"/user/buy/activation/{country}/{operator}/{product}")
-        return data  # {id, phone, status, ...}
-
-    def check_order(self, order_id: int) -> dict:
-        return self._get(f"/user/check/{order_id}")
-
-    def finish_order(self, order_id: int) -> dict:
-        return self._get(f"/user/finish/{order_id}")
-
-    def cancel_order(self, order_id: int) -> dict:
-        return self._get(f"/user/cancel/{order_id}")
-
-    def wait_sms(self, order_id: int, timeout: int = 180) -> str | None:
-        """Poll mỗi 5s, trả về code OTP hoặc None nếu timeout."""
-        deadline = time.time() + timeout
-        log.info(f"[5SIM] Chờ SMS order #{order_id} (max {timeout}s)...")
-        while time.time() < deadline:
-            try:
-                data = self.check_order(order_id)
-                status = data.get("status", "")
-                sms_list = data.get("sms") or []
-                if sms_list:
-                    raw = sms_list[0].get("text", "")
-                    # Extract 4-6 digit code
-                    m = re.search(r"\b(\d{4,6})\b", raw)
-                    if m:
-                        code = m.group(1)
-                        log.info(f"[5SIM] ✅ OTP: {code}")
-                        return code
-                if status in ("CANCELED", "EXPIRED", "TIMEOUT"):
-                    log.error(f"[5SIM] Order {status}.")
-                    return None
-            except Exception as e:
-                log.warning(f"[5SIM] check_order lỗi: {e}")
-            time.sleep(5)
-        log.error("[5SIM] Timeout chờ SMS.")
-        return None
+MIN_BALANCE = 0.10
 
 
 # ── UI helpers on device ──────────────────────────────────────
@@ -160,12 +95,12 @@ def register_account(
     serial = f"127.0.0.1:{port}"
     d = u2.connect(serial)
 
-    five = FiveSimClient(five_sim_token)
+    five = FiveSimAPI(five_sim_token)
 
     # 1. Check balance
-    bal = five.balance()
+    bal = five.get_balance()
     log.info(f"[REG] 5sim balance: ${bal:.4f}")
-    if bal < 0.10:
+    if bal < MIN_BALANCE:
         return {"ok": False, "phone": "", "message": f"Số dư 5sim không đủ: ${bal:.4f}"}
 
     # 2. Mua số
@@ -175,8 +110,8 @@ def register_account(
     except Exception as e:
         return {"ok": False, "phone": "", "message": f"Mua số thất bại: {e}"}
 
-    order_id = order["id"]
-    raw_phone = order.get("phone", "")
+    order_id = order.order_id
+    raw_phone = order.phone
     log.info(f"[REG] Đơn #{order_id} — SĐT: {raw_phone}")
 
     phone_for_ks = _get_phone_simple(raw_phone)
@@ -190,14 +125,13 @@ def register_account(
         _dismiss_popups(d)
 
         # 4. Tìm nút đăng ký hoặc đăng nhập bằng SĐT
-        # Kuaishou thường có "手机号注册" hoặc "手机号码登录" hoặc "Log In", "Me" bản Quốc tế
         reg_btn = None
         for txt in ["手机号注册", "手机号码登录", "账号登录", "登录/注册", "Login", "Log In", "Sign up", "Me", "我"]:
             el = d(text=txt)
             if not el.exists:
                 el = d(textContains=txt)
             if not el.exists:
-                el = d(description=txt) # Gỡ lỗi "Me" thường ở description
+                el = d(description=txt)
             if el.exists(timeout=2):
                 reg_btn = el
                 break
@@ -212,7 +146,6 @@ def register_account(
 
         # 5. Nhập SĐT
         phone_input = d(focused=True)
-        attempts = 0
         for rid in [
             "com.smile.gifmaker:id/et_phone_number",
             "com.smile.gifmaker:id/phone_edit_text",
@@ -222,7 +155,6 @@ def register_account(
             if el.exists(timeout=2):
                 phone_input = el
                 break
-            attempts += 1
 
         phone_input.click()
         time.sleep(0.5)
@@ -241,7 +173,7 @@ def register_account(
         _dismiss_popups(d, quick=True)
 
         # 7. Chờ SMS từ 5sim
-        code = five.wait_sms(order_id, timeout=180)
+        code = five.wait_for_sms(order_id, timeout=180)
         if not code:
             five.cancel_order(order_id)
             return {"ok": False, "phone": raw_phone, "message": "Không nhận được OTP từ 5sim."}
@@ -259,7 +191,6 @@ def register_account(
                 break
 
         if otp_input is None:
-            # Fallback: tìm input focused
             otp_input = d(focused=True)
 
         otp_input.click()
@@ -267,7 +198,7 @@ def register_account(
         d.clear_text()
         otp_input.send_keys(code)
         time.sleep(1)
-        log.info(f"[REG] Đã nhập OTP: {code}")
+        log.info("[REG] Đã nhập OTP")
 
         # 9. Submit
         for confirm_txt in ["登录", "确认", "Confirm", "Submit", "完成"]:
@@ -285,12 +216,12 @@ def register_account(
                 success = True
                 break
 
-        five.finish_order(order_id)
-
         if success:
-            log.info(f"[REG] ✅ Đăng ký thành công: {raw_phone}")
+            five.finish_order(order_id)
+            log.info(f"[REG] Đăng ký thành công: {raw_phone}")
             return {"ok": True, "phone": raw_phone, "message": f"Đăng ký thành công: {raw_phone}"}
         else:
+            five.cancel_order(order_id)
             return {"ok": False, "phone": raw_phone, "message": "OTP đã nhập nhưng chưa xác nhận vào được feed."}
 
     except Exception as e:

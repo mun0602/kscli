@@ -9,10 +9,14 @@ from __future__ import annotations
 import logging
 import os
 import random
+import subprocess
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import uiautomator2 as u2
 
 try:
     from PySide6.QtCore import QObject, QThread, Signal
@@ -278,10 +282,8 @@ class FarmWorker(QThread):
         self._log(f"✅ Đã xử lý {vm_processed}/{total_vms} máy.")
         self.session_finished.emit(not self._stop_flag)
 
-    def _dismiss_popups(self, d) -> None:
+    def _dismiss_popups(self, d: u2.Device) -> None:
         """Dismiss common popups/dialogs (update, permissions, ads)."""
-        import subprocess
-        
         try:
             # Try to dismiss various popups — tìm nút Dissmiss/Close/Later
             attempts = 0
@@ -337,7 +339,7 @@ class FarmWorker(QThread):
         except Exception as e:
             self._log(f"  ⚠ Lỗi khi dismiss popups: {e}")
 
-    def _farm_single_device(self, idx: int, d) -> None:
+    def _farm_single_device(self, idx: int, d: u2.Device) -> None:
         """Farm all videos on a single device (runs in thread pool)."""
         self._log(f"\n{'='*40}\n📱 Farm trên VM #{idx}\n{'='*40}")
 
@@ -346,7 +348,6 @@ class FarmWorker(QThread):
         current = d.app_current().get("package", "")
         if current != APP_PACKAGE:
             self._log(f"[App] Đang mở Kuaishou...")
-            import subprocess
             # am start -n là cách đáng tin cậy nhất trên MuMu emulator
             subprocess.run(
                 [mumu.ADB, "-s", d.serial, "shell", "am", "start", "-n", KUAISHOU_ACTIVITY],
@@ -416,7 +417,7 @@ class FarmWorker(QThread):
             else:
                 self._log(f"  ⚠ Không thêm được bạn nào trên VM #{idx}")
 
-    def _run_interaction(self, d, device_idx: int) -> dict:
+    def _run_interaction(self, d: u2.Device, device_idx: int) -> dict:
         s = self.settings
         result = {"like": False, "follow": False, "comment": False}
 
@@ -428,7 +429,6 @@ class FarmWorker(QThread):
         self.db.write_log(ActionLog(device_idx, "watch", True))
         self.db.increment_stat(device_idx, "watch")
 
-        # Like
         # Like
         if s.like_enabled:
             # 🎲 Roll the dice
@@ -493,7 +493,7 @@ class FarmWorker(QThread):
         self.stats_updated.emit(self._total.copy())
         return result
 
-    def _post_comment(self, d, text: str) -> bool:
+    def _post_comment(self, d: u2.Device, text: str) -> bool:
         """Full comment flow — verified selectors 2026-04-02."""
         # 1. Mở comment panel
         cmt_btn = d(resourceId=RID_COMMENT_BTN)
@@ -572,7 +572,7 @@ class FarmWorker(QThread):
         self._sleep(0.5, 1.0)
         return True
 
-    def _run_addfriend(self, d, device_idx: int) -> int:
+    def _run_addfriend(self, d: u2.Device, device_idx: int) -> int:
         """Navigate Me → Add Friend, add some friends, then return to feed."""
         added = 0
         try:
@@ -666,7 +666,7 @@ class FarmWorker(QThread):
 
         return added
 
-    def _return_to_feed(self, d) -> None:
+    def _return_to_feed(self, d: u2.Device) -> None:
         """Navigate back to the main video feed."""
         # Press back until we're at main feed
         for _ in range(3):
@@ -684,7 +684,7 @@ class FarmWorker(QThread):
             home_tab.click()
         self._sleep(1.5, 2.5)
 
-    def _swipe_next(self, d) -> None:
+    def _swipe_next(self, d: u2.Device) -> None:
         try:
             w, h = d.info.get("displayWidth", 1080), d.info.get("displayHeight", 1920)
             d.swipe(
