@@ -23,6 +23,7 @@ class Database:
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
         self._lock = threading.Lock()
         self._init_schema()
 
